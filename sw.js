@@ -10,7 +10,7 @@
    - Chart.js & font        : simpanan dulu, lalu diperbarui.
    - Permintaan ke Apps Script (POST) tidak pernah disentuh.
    ============================================================ */
-const SIMPANAN = 'keuanganku-v1';
+const SIMPANAN = 'keuanganku-v2';
 const KERANGKA = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 const LUAR = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 

@@ -1,5 +1,5 @@
 /* ============================================================
-   KEUANGANKU — styles.css                              Tahap 1
+   KEUANGANKU — styles.css                      Tahap 1 + Asset
    Tema terang (default). Variabel tema gelap sudah disiapkan
    dan akan diaktifkan lewat tombol di Tahap 4.
    ============================================================ */
@@ -193,6 +193,13 @@ button.baris:hover { background: var(--field); }
 .batang i { display: block; height: 100%; border-radius: 99px; background: var(--grad); min-width: 0; transition: width .5s ease; }
 .goal-bawah { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-3); }
 
+.angka-besar { font-size: clamp(24px, 7vw, 32px); font-weight: 800; letter-spacing: -.02em; margin: 2px 0 10px; }
+.angka-besar small { font-size: 15px; font-weight: 600; color: var(--ink-2); letter-spacing: 0; }
+.komposisi { display: flex; gap: 2px; height: 12px; border-radius: 99px; overflow: hidden; }
+.komposisi i { display: block; min-width: 4px; border-radius: 3px; }
+.tautan:disabled { color: var(--ink-3); cursor: default; }
+.saham-bawah { display: flex; justify-content: space-between; align-items: center; gap: 6px 10px; flex-wrap: wrap; font-size: 12px; color: var(--ink-3); padding: 0 4px 10px 58px; }
+.dialog .baris-tombol { flex-wrap: wrap; }
 .kosong { text-align: center; padding: 26px 12px; color: var(--ink-3); font-size: 13.5px; line-height: 1.5; }
 .kosong .emo-besar { font-size: 30px; display: block; margin-bottom: 6px; }
 .kosong b { display: block; color: var(--ink-2); font-size: 14.5px; margin-bottom: 2px; }
@@ -254,6 +261,7 @@ button.baris:hover { background: var(--field); }
   background: var(--grad); color: #fff; box-shadow: 0 14px 28px -10px rgba(98, 88, 240, .8); transition: transform .15s ease;
 }
 .fab .ik { width: 28px; height: 28px; stroke-width: 2.4; }
+.fab-apung { position: fixed; right: 16px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 31; margin: 0; }
 .fab:active { transform: scale(.93); }
 
 /* ---------- lembar (sheet / dialog) ---------- */
@@ -280,7 +288,7 @@ button.baris:hover { background: var(--field); }
 .segmen button.aktif { background: var(--card-solid); color: var(--ink); box-shadow: 0 2px 8px rgba(19, 26, 47, .12); }
 .nominal { display: flex; align-items: baseline; gap: 8px; background: var(--grad-soft); border-radius: 18px; padding: 14px 16px; margin-bottom: 4px; border: 1.5px solid transparent; }
 .nominal:focus-within { border-color: var(--brand); }
-.nominal span { font-size: 20px; font-weight: 700; color: var(--ink-2); }
+.nominal span { font-size: 20px; font-weight: 700; color: var(--ink-2); flex: none; }
 .nominal input { border: 0; background: none; outline: none; width: 100%; min-width: 0; font-size: 34px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .nominal input::placeholder { color: var(--ink-3); opacity: .5; }
 .kat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
@@ -346,6 +354,7 @@ button.baris:hover { background: var(--field); }
   .sempit { max-width: 760px; }
 }
 @media (max-width: 999px) { .kepala-kanan .periode { display: none; } .hanya-meja { display: none; } }
+@media (min-width: 1000px) { .fab-apung { display: none; } }
 @media (min-width: 1000px) { .hanya-hp { display: none; } }
 @media (max-width: 370px) { .kat-grid { gap: 6px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

@@ -1,15 +1,19 @@
 /* ============================================================
-   KEUANGANKU — app.js                                  Tahap 1
-   Input transaksi kilat, koneksi Google Sheets, dashboard dasar.
+   KEUANGANKU — app.js                          Tahap 1 + Asset
+   Input transaksi kilat, koneksi Google Sheets, dashboard dasar,
+   serta tab Asset (emas dalam gram, saham per kode, tabungan).
    Tidak ada URL API maupun token di file ini: keduanya hanya
    disimpan di perangkatmu setelah kamu menghubungkan aplikasi.
    ============================================================ */
 (function () {
   'use strict';
 
-  const VERSI = '1.0.0';
-  const LS = { cfg: 'kk_cfg', data: 'kk_data', sinkron: 'kk_sinkron', sembunyi: 'kk_sembunyi', akunAkhir: 'kk_akun_akhir', demo: 'kk_demo' };
+  const VERSI = '1.1.0';
+  const LS = { cfg: 'kk_cfg', data: 'kk_data', sinkron: 'kk_sinkron', sembunyi: 'kk_sembunyi', akunAkhir: 'kk_akun_akhir', demo: 'kk_demo2' };
   const KELOMPOK_TABUNGAN = 'Tabungan & Investasi';
+  const KAT_EMAS = 'inv-emas', KAT_SAHAM = 'inv-saham';
+  // Jenis "Asset" dulu bernama "Transfer"; data lama tetap dikenali.
+  const asetkah = (t) => t.jenis === 'Asset' || t.jenis === 'Transfer';
   const HARI = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
   const BULAN = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
 
@@ -50,7 +54,7 @@
         r.jumlah++;
         if (t.jenis === 'Pemasukan') r.masuk += n;
         else if (t.jenis === 'Pengeluaran') { r.keluar += n; r.perKategori[t.kategori_id] = (r.perKategori[t.kategori_id] || 0) + n; }
-        else if (t.jenis === 'Transfer') {
+        else if (asetkah(t)) {
           const k = petaKategori[t.kategori_id];
           if (k && k.kelompok === KELOMPOK_TABUNGAN) r.tabungan += n;
         }
@@ -67,7 +71,7 @@
         const n = Number(t.nominal) || 0;
         if (t.jenis === 'Pemasukan') { if (t.akun_id in s) s[t.akun_id] += n; }
         else if (t.jenis === 'Pengeluaran') { if (t.akun_id in s) s[t.akun_id] -= n; }
-        else if (t.jenis === 'Transfer') {
+        else if (asetkah(t)) {
           if (t.akun_id in s) s[t.akun_id] -= n;
           if (t.akun_tujuan_id && t.akun_tujuan_id in s) s[t.akun_tujuan_id] += n;
         }
@@ -136,6 +140,58 @@
       return t + a;
     },
 
+    /** Jumlah gram dari teks "0,5" atau "0.5" (maksimal 4 angka desimal). */
+    gramDariTeks(s) {
+      const n = parseFloat(String(s || '').replace(/[^\d.,]/g, '').replace(',', '.'));
+      return isFinite(n) ? Math.round(n * 10000) / 10000 : 0;
+    },
+    gramTeks(n) { return String(Math.round((Number(n) || 0) * 10000) / 10000).replace('.', ','); },
+
+    /**
+     * Posisi asset saat ini beserta nilainya menurut harga terkini.
+     * Emas  = saldo awal (sheet Aset_Emas) + pembelian yang dicatat dalam gram.
+     * Saham = saldo awal (sheet Aset_Saham) + pembelian per kode dalam lot (1 lot = 100 lembar).
+     * Tunai = saldo tiap akun.
+     */
+    portofolio(d) {
+      const harga = {};
+      for (const h of d.harga || []) harga[h.kode] = h;
+      const hg = (k) => (harga[k] && Number(harga[k].harga)) || 0;
+
+      const emas = { gram: 0, modal: 0, modalLengkap: true, harga: hg('EMAS'), info: harga.EMAS || null };
+      for (const e of d.emas || []) {
+        const g = Number(e.gram) || 0, hb = Number(e.harga_beli_per_gram) || 0;
+        emas.gram += g; emas.modal += g * hb;
+        if (g > 0 && !(hb > 0)) emas.modalLengkap = false;
+      }
+      const peta = {};
+      const pos = (k) => peta[k] || (peta[k] = { kode: k, lot: 0, modal: 0 });
+      for (const x of d.saham || []) {
+        const k = String(x.kode || '').trim().toUpperCase();
+        if (!k) continue;
+        const lot = Number(x.lot) || 0;
+        pos(k).lot += lot; pos(k).modal += lot * 100 * (Number(x.harga_rata_beli) || 0);
+      }
+      for (const t of d.transaksi || []) {
+        if (!asetkah(t)) continue;
+        const j = Number(t.aset_jumlah) || 0, n = Number(t.nominal) || 0;
+        if (!(j > 0)) continue;
+        if (t.kategori_id === KAT_EMAS) { emas.gram += j; emas.modal += n; }
+        else if (t.kategori_id === KAT_SAHAM && t.aset_kode) { const q = pos(String(t.aset_kode).toUpperCase()); q.lot += j; q.modal += n; }
+      }
+      emas.gram = Math.round(emas.gram * 10000) / 10000;
+      emas.nilai = Math.round(emas.gram * emas.harga);
+      const saham = Object.keys(peta).sort().map((k) => {
+        const q = peta[k], lembar = q.lot * 100, h = hg(k);
+        return { kode: k, lot: q.lot, modal: Math.round(q.modal), rata: lembar > 0 ? q.modal / lembar : 0, harga: h, nilai: Math.round(lembar * h), info: harga[k] || null };
+      }).filter((q) => q.lot > 0);
+      const saldo = H.saldoAkun(d.akun || [], d.transaksi || []);
+      const tunai = (d.akun || []).filter((a) => a.aktif !== false).sort((a, b) => (a.urutan || 0) - (b.urutan || 0))
+        .map((a) => ({ id: a.id, nama: a.nama, ikon: a.ikon, tipe: a.tipe, saldo: saldo[a.id] || 0 }));
+      const nilaiSaham = saham.reduce((x, q) => x + q.nilai, 0), nilaiTunai = tunai.reduce((x, a) => x + a.saldo, 0);
+      return { emas, saham, tunai, nilaiEmas: emas.nilai, nilaiSaham, nilaiTunai, total: emas.nilai + nilaiSaham + nilaiTunai };
+    },
+
     angkaDariTeks(s) { return Number(String(s || '').replace(/\D/g, '')) || 0; },
     ribuan(n) { return n ? String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.') : ''; }
   };
@@ -162,6 +218,7 @@
     riwayat: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/>',
     tambah: '<path d="M12 5v14M5 12h14"/>',
     goals: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+    asset: '<path d="M3 17.5 9 11l4 4 8-8.5"/><path d="M15.5 6.5H21V12"/>',
     lainnya: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
     mata: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
     mataTutup: '<path d="M3 3l18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.5 6.6C3.6 8.5 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.5 4.5-1.200"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
@@ -263,6 +320,7 @@
       terapkanData(d);
       S.sinkron = 'diam';
       gambar();
+      segarkanHargaBilaBasi();
       if (opsi.kabari) toast('Data sudah yang terbaru');
     } catch (e) {
       S.sinkron = 'gagal'; tandaiSinkron();
@@ -335,10 +393,10 @@
         ['hiburan', 'Hiburan', 'Pengeluaran', 'Keinginan', '🎬'], ['belanja', 'Belanja', 'Pengeluaran', 'Keinginan', '🛍️'],
         ['hobi', 'Hobi', 'Pengeluaran', 'Keinginan', '🎮'], ['liburan', 'Liburan', 'Pengeluaran', 'Keinginan', '✈️'],
         ['langganan', 'Langganan', 'Pengeluaran', 'Keinginan', '📺'], ['lain-lain', 'Lain-lain', 'Pengeluaran', 'Keinginan', '📦'],
-        ['inv-saham', 'Saham', 'Transfer', KELOMPOK_TABUNGAN, '📈'], ['inv-emas', 'Emas', 'Transfer', KELOMPOK_TABUNGAN, '🪙'],
-        ['tabungan', 'Tabungan', 'Transfer', KELOMPOK_TABUNGAN, '🐷'], ['dana-darurat', 'Dana Darurat', 'Transfer', KELOMPOK_TABUNGAN, '🛟'],
-        ['pindah-dana', 'Pindah Antar Akun', 'Transfer', 'Netral', '🔁'], ['gaji', 'Gaji', 'Pemasukan', '', '💼'],
-        ['bonus-thr', 'Bonus/THR', 'Pemasukan', '', '🎁'], ['sampingan', 'Sampingan', 'Pemasukan', '', '🧰'], ['pemasukan-lain', 'Pemasukan Lain', 'Pemasukan', '', '➕']
+        ['inv-saham', 'Saham', 'Asset', KELOMPOK_TABUNGAN, '📈'], ['inv-emas', 'Emas', 'Asset', KELOMPOK_TABUNGAN, '🪙'],
+        ['tabungan', 'Tabungan', 'Asset', KELOMPOK_TABUNGAN, '🐷'], ['dana-darurat', 'Dana Darurat', 'Asset', KELOMPOK_TABUNGAN, '🛟'],
+        ['pindah-dana', 'Pindah Antar Akun', 'Asset', 'Netral', '🔁'], ['gaji', 'Gaji', 'Pemasukan', '', '💼'],
+        ['bonus-thr', 'Bonus/THR', 'Pemasukan', '', '🎁'], ['sampingan', 'Sampingan', 'Pemasukan', '', '🧰'], ['teman-keluarga', 'Teman/Keluarga', 'Pemasukan', '', '🤝'], ['pemasukan-lain', 'Pemasukan Lain', 'Pemasukan', '', '➕']
       ].map((k, i) => ({ id: k[0], nama: k[1], jenis: k[2], kelompok: k[3], ikon: k[4], urutan: i + 1, aktif: true }));
       const akun = [['bca', 'BCA', 'Bank', 300000, '🏦'], ['bni', 'BNI', 'Bank', 2300000, '🏦'], ['tunai', 'Tunai (dompet)', 'Tunai', 0, '💵']]
         .map((a, i) => ({ id: a[0], nama: a[1], tipe: a[2], saldo_awal: a[3], ikon: a[4], urutan: i + 1, aktif: true, dana_darurat: false }));
@@ -351,18 +409,18 @@
       let benih = 7; const acak = () => { benih = (benih * 16807) % 2147483647; return benih / 2147483647; };
       const tx = []; const hariAkhir = hariIni();
       const p0 = H.periodeGajian(25, hariAkhir, -1).mulai;
-      const tambah = (tanggal, jenis, nominal, kategori_id, akun_id, catatan, tujuan) => tx.push({
-        id: 'D' + tx.length.toString(36).padStart(7, '0'), tanggal, jenis, nominal, kategori_id, akun_id, akun_tujuan_id: tujuan || '', goal_id: '', catatan: catatan || '', dibuat: tanggal + 'T12:00:' + pad(tx.length % 60), diperbarui: ''
+      const tambah = (tanggal, jenis, nominal, kategori_id, akun_id, catatan, tujuan, aset_kode, aset_jumlah) => tx.push({
+        id: 'D' + tx.length.toString(36).padStart(7, '0'), tanggal, jenis, nominal, kategori_id, akun_id, akun_tujuan_id: tujuan || '', goal_id: '', catatan: catatan || '', dibuat: tanggal + 'T12:00:' + pad(tx.length % 60), diperbarui: '', aset_kode: aset_kode || '', aset_jumlah: aset_jumlah || 0
       });
       for (let d = p0; d <= hariAkhir; d = geserHari(d, 1)) {
         const tg = dariYmd(d).getDate();
         if (tg === 25) {
           tambah(d, 'Pemasukan', 10000000, 'gaji', 'bca', 'Gaji bulanan');
-          tambah(d, 'Transfer', 1000000, 'tabungan', 'bca', 'Sisihkan di awal', 'bni');
-          tambah(d, 'Transfer', 500000, 'inv-emas', 'bca', 'Beli emas digital');
-          tambah(d, 'Transfer', 500000, 'inv-saham', 'bca', 'Top up RDN');
+          tambah(d, 'Asset', 1000000, 'tabungan', 'bca', 'Sisihkan di awal', 'bni');
+          tambah(d, 'Asset', 1150000, 'inv-emas', 'bca', 'Beli emas digital', '', 'EMAS', 0.5);
+          tambah(d, 'Asset', 555000, 'inv-saham', 'bca', 'Beli BBCA', '', 'BBCA', 1);
           tambah(d, 'Pengeluaran', 1800000, 'kos-sewa', 'bca', 'Kos bulan ini');
-          tambah(d, 'Transfer', 1500000, 'pindah-dana', 'bca', 'Tarik tunai', 'tunai');
+          tambah(d, 'Asset', 1500000, 'pindah-dana', 'bca', 'Tarik tunai', 'tunai');
         }
         if (tg === 27) tambah(d, 'Pengeluaran', 350000, 'tagihan-pulsa', 'bca', 'Listrik & paket data');
         if (tg === 1) tambah(d, 'Pengeluaran', 54990, 'langganan', 'bca', 'Streaming');
@@ -376,6 +434,11 @@
         versi: 'demo', spreadsheet_url: '', pengaturan: { nama_panggilan: '', tanggal_gajian: 25, gaji_bulanan: 10000000, dana_darurat_kali: 3 },
         kategori: kat, akun, goals, anggaran: [],
         setoran: [{ id: 'S1', goal_id: 'G-dana-darurat', nominal: 3000000 }, { id: 'S2', goal_id: 'G-mobil', nominal: 4500000 }, { id: 'S3', goal_id: 'G-menikah', nominal: 2000000 }],
+        emas: [{ id: 'E-1', jenis: 'Digital', gram: 3, harga_beli_per_gram: 0 }], saham: [],
+        harga: [
+          { kode: 'EMAS', jenis: 'emas', harga: 2347000, otomatis: 2347000, manual: 0, sumber: 'contoh', diperbarui: new Date().toISOString().slice(0, 19) },
+          { kode: 'BBCA', jenis: 'saham', harga: 5600, otomatis: 5600, manual: 0, sumber: 'contoh', diperbarui: '' }
+        ],
         transaksi: tx
       };
       tulis(LS.demo, d);
@@ -396,6 +459,19 @@
       }
       if (aksi === 'transaksi.hapus') { d.transaksi = d.transaksi.filter((t) => t.id !== p.id); tulis(LS.demo, d); return { id: p.id }; }
       if (aksi === 'pengaturan.simpan') { Object.assign(d.pengaturan, p.nilai); tulis(LS.demo, d); return { pengaturan: p.nilai }; }
+      if (aksi === 'harga.segarkan') return { harga: d.harga, pesan: '' };
+      if (aksi === 'harga.cek') {
+        const contoh = { BBCA: 5600, BBRI: 4000, TLKM: 3000, ANTM: 2200, BMRI: 4800 };
+        if (!contoh[p.kode]) return { kode: p.kode, harga: 0, ditemukan: false };
+        if (!d.harga.some((h) => h.kode === p.kode)) { d.harga.push({ kode: p.kode, jenis: 'saham', harga: contoh[p.kode], otomatis: contoh[p.kode], manual: 0, sumber: 'contoh', diperbarui: '' }); tulis(LS.demo, d); }
+        return { kode: p.kode, harga: contoh[p.kode], ditemukan: true, sumber: 'contoh' };
+      }
+      if (aksi === 'harga.manual') {
+        let h = d.harga.find((x) => x.kode === p.kode);
+        if (!h) { h = { kode: p.kode, jenis: p.kode === 'EMAS' ? 'emas' : 'saham', otomatis: 0, diperbarui: '' }; d.harga.push(h); }
+        h.manual = Math.max(0, Math.round(p.harga) || 0); h.harga = h.manual > 0 ? h.manual : h.otomatis; h.sumber = h.manual > 0 ? 'manual' : 'contoh';
+        tulis(LS.demo, d); return { harga: d.harga };
+      }
       throw new Galat('AKSI', 'Aksi tidak dikenal.');
     }
   };
@@ -403,7 +479,7 @@
   /* ==========================================================
      6. KERANGKA & NAVIGASI
      ========================================================== */
-  const HALAMAN = [['beranda', 'Beranda'], ['riwayat', 'Riwayat'], ['goals', 'Goals'], ['lainnya', 'Lainnya']];
+  const HALAMAN = [['beranda', 'Beranda'], ['riwayat', 'Riwayat'], ['asset', 'Asset'], ['goals', 'Goals'], ['lainnya', 'Lainnya']];
 
   function gambar() {
     for (const g of S.grafik) { try { g.destroy(); } catch (e) { /* abaikan */ } }
@@ -411,7 +487,7 @@
     const akar = $('#akar');
     if (!S.cfg) { akar.innerHTML = layarHubungkan(); pasangHubungkan(); return; }
 
-    const isi = !S.data ? rangkaMuat() : ({ beranda: halBeranda, riwayat: halRiwayat, goals: halGoals, lainnya: halLainnya }[S.halaman] || halBeranda)();
+    const isi = !S.data ? rangkaMuat() : ({ beranda: halBeranda, riwayat: halRiwayat, asset: halAsset, goals: halGoals, lainnya: halLainnya }[S.halaman] || halBeranda)();
     const nav = (id, nama) => '<button class="nav-item' + (S.halaman === id ? ' aktif' : '') + '" data-hal="' + id + '"' + (S.halaman === id ? ' aria-current="page"' : '') + '>' + ikon(id) + '<span>' + nama + '</span></button>';
     const sisi = (id, nama) => '<button class="sisi-item' + (S.halaman === id ? ' aktif' : '') + '" data-hal="' + id + '">' + ikon(id) + nama + '</button>';
     const fokus = document.activeElement && document.activeElement.id;
@@ -425,12 +501,11 @@
           '<button class="tombol utama penuh" data-aksi="tambah">' + ikon('tambah') + 'Catat transaksi</button>' +
           '<div class="sisi-bawah">' + (S.cfg.demo ? 'Mode demo' : 'Terhubung ke Google Sheets') + '<br>Versi ' + VERSI + '</div>' +
         '</aside>' +
-        '<main class="main' + (S.halaman === 'beranda' ? '' : ' sempit') + '" id="utama">' + isi + '</main>' +
+        '<main class="main' + (S.halaman === 'beranda' || S.halaman === 'asset' ? '' : ' sempit') + '" id="utama">' + isi + '</main>' +
         '<nav class="navbawah" aria-label="Navigasi utama">' +
-          nav('beranda', 'Beranda') + nav('riwayat', 'Riwayat') +
-          '<button class="fab" data-aksi="tambah" aria-label="Catat transaksi baru">' + ikon('tambah') + '</button>' +
-          nav('goals', 'Goals') + nav('lainnya', 'Lainnya') +
+          HALAMAN.map((h) => nav(h[0], h[1])).join('') +
         '</nav>' +
+        '<button class="fab fab-apung" data-aksi="tambah" aria-label="Catat transaksi baru">' + ikon('tambah') + '</button>' +
       '</div>';
 
     if (fokus && $('#' + fokus)) { const el = $('#' + fokus); el.focus(); if (posisi != null && el.setSelectionRange) { try { el.setSelectionRange(posisi, posisi); } catch (e) { /* abaikan */ } } }
@@ -553,16 +628,18 @@
     const k = pk[t.kategori_id] || { nama: t.kategori_id || 'Tanpa kategori', ikon: '❔' };
     const a = pa[t.akun_id], tujuan = pa[t.akun_tujuan_id];
     const tanda = t.jenis === 'Pemasukan' ? '+' : t.jenis === 'Pengeluaran' ? '-' : '';
-    const kelas = t.jenis === 'Pemasukan' ? ' masuk' : t.jenis === 'Transfer' ? ' pindah' : '';
+    const aset = asetkah(t);
+    const kelas = t.jenis === 'Pemasukan' ? ' masuk' : aset ? ' pindah' : '';
+    const rinci = t.kategori_id === KAT_EMAS && t.aset_jumlah > 0 ? H.gramTeks(t.aset_jumlah) + ' gram' : t.kategori_id === KAT_SAHAM && t.aset_kode ? t.aset_kode + ' ' + (Number(t.aset_jumlah) || 0) + ' lot' : '';
     const bagian = [];
     if (denganTanggal) bagian.push(tglPendek(t.tanggal));
-    bagian.push((a ? a.nama : t.akun_id || '') + (t.jenis === 'Transfer' ? ' → ' + (tujuan ? tujuan.nama : 'investasi') : ''));
+    bagian.push((a ? a.nama : t.akun_id || '') + (aset ? ' → ' + (tujuan ? tujuan.nama : (rinci || 'luar akun')) : ''));
     if (t.catatan) bagian.push(t.catatan);
     if (t._tunda) bagian.unshift('menyimpan…');
     return '<button class="baris' + (t._tunda ? ' tunda' : '') + '" data-tx="' + esc(t.id) + '" aria-label="Ubah transaksi ' + esc(k.nama) + ' ' + H.rupiah(t.nominal) + '">' +
       '<span class="emo">' + esc(k.ikon || '❔') + '</span>' +
       '<div><div class="baris-judul">' + esc(k.nama) + '</div><div class="baris-sub">' + esc(bagian.join(' · ')) + '</div></div>' +
-      '<div class="baris-nilai nom' + kelas + '">' + (t.jenis === 'Transfer' ? '⇄ ' : tanda) + (S.sembunyi ? rp(0) : H.rupiah(t.nominal)) + '</div></button>';
+      '<div class="baris-nilai nom' + kelas + '">' + (aset ? '⇄ ' : tanda) + (S.sembunyi ? rp(0) : H.rupiah(t.nominal)) + '</div></button>';
   }
 
   function kartuGoal(g) {
@@ -618,10 +695,10 @@
     const pk = petaKategori(), pa = petaAkun(), f = S.saring;
     const kata = f.teks.trim().toLowerCase();
     let daftar = H.urutTerbaru(S.data.transaksi).filter((t) => {
-      if (f.jenis !== 'Semua' && t.jenis !== f.jenis) return false;
+      if (f.jenis !== 'Semua' && (f.jenis === 'Asset' ? !asetkah(t) : t.jenis !== f.jenis)) return false;
       if (!kata) return true;
       const k = pk[t.kategori_id], a = pa[t.akun_id];
-      return [(k && k.nama) || '', (a && a.nama) || '', t.catatan || '', String(t.nominal), t.tanggal].join(' ').toLowerCase().indexOf(kata) >= 0;
+      return [(k && k.nama) || '', (a && a.nama) || '', t.catatan || '', t.aset_kode || '', String(t.nominal), t.tanggal].join(' ').toLowerCase().indexOf(kata) >= 0;
     });
     const total = daftar.length;
     daftar = daftar.slice(0, f.batas);
@@ -639,7 +716,7 @@
 
     return kepala('Riwayat transaksi', total + ' transaksi') +
       '<div class="cari">' + ikon('cari') + '<input id="cari-riwayat" type="search" placeholder="Cari kategori, catatan, atau nominal" value="' + esc(f.teks) + '" autocomplete="off" aria-label="Cari transaksi"></div>' +
-      '<div class="chip-baris">' + ['Semua', 'Pengeluaran', 'Pemasukan', 'Transfer'].map((j) => '<button class="chip' + (f.jenis === j ? ' aktif' : '') + '" data-saring="' + j + '">' + j + '</button>').join('') + '</div>' +
+      '<div class="chip-baris">' + ['Semua', 'Pengeluaran', 'Pemasukan', 'Asset'].map((j) => '<button class="chip' + (f.jenis === j ? ' aktif' : '') + '" data-saring="' + j + '">' + j + '</button>').join('') + '</div>' +
       '<div class="kartu">' + (html || kosong('🔍', kata || f.jenis !== 'Semua' ? 'Tidak ada yang cocok' : 'Belum ada transaksi', kata || f.jenis !== 'Semua' ? 'Coba kata kunci atau filter lain.' : 'Tekan tombol + untuk mencatat yang pertama.')) +
       (total > daftar.length ? '<button class="tombol polos penuh" data-aksi="lebih" style="margin-top:12px">Tampilkan lebih banyak (' + (total - daftar.length) + ')</button>' : '') + '</div>';
   }
@@ -680,63 +757,256 @@
   }
 
   /* ==========================================================
+     8b. HALAMAN: ASSET (emas, saham, tabungan)
+     ========================================================== */
+  function halAsset() {
+    const d = S.data, p = H.portofolio(d), e = p.emas;
+    const serverLama = !Array.isArray(d.harga);
+    const persen = (n) => (p.total > 0 ? Math.round((n / p.total) * 100) : 0);
+    const bagian = [['Emas', p.nilaiEmas, '--s1'], ['Saham', p.nilaiSaham, '--s2'], ['Tabungan & tunai', p.nilaiTunai, '--s3']];
+    const waktu = (x) => { const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(x || ''); return m ? tglPendek(m[1]) + ' ' + m[2] + '.' + m[3] : ''; };
+    const untungRugi = (nilai, modal) => {
+      const selisih = nilai - modal, pr = modal > 0 ? Math.abs(Math.round((selisih / modal) * 1000) / 10) : 0;
+      return '<span class="delta ' + (selisih >= 0 ? 'baik' : 'buruk') + '">' + (selisih >= 0 ? '▲ untung ' : '▼ rugi ') + (S.sembunyi ? '•••' : H.rupiah(Math.abs(selisih))) + ' (' + String(pr).replace('.', ',') + '%)</span>';
+    };
+    const sumberHarga = (info) => (!info || !(info.harga > 0) ? 'belum ada harga' : (info.sumber || 'otomatis') + (info.sumber !== 'manual' && waktu(info.diperbarui) ? ', ' + waktu(info.diperbarui) : ''));
+    const info = (kiri, kanan) => '<div class="info-baris"><span>' + kiri + '</span><span class="nom">' + kanan + '</span></div>';
+
+    return kepala('Asset', 'Emas, saham, dan tabungan') + spandukDemo() +
+      (serverLama ? '<div class="spanduk"><span>Server belum diperbarui ke versi 1.1, jadi harga emas dan saham belum tersedia. Perbarui Code.gs lalu jalankan setup.</span></div>' : '') +
+      '<section class="kartu" style="margin-bottom:12px"><div class="kartu-kepala"><h2>Total asset</h2>' +
+        '<button class="tautan" data-aksi="perbarui-harga"' + (S.hargaJalan ? ' disabled' : '') + '>' + (S.hargaJalan ? 'Memperbarui harga…' : 'Perbarui harga') + '</button></div>' +
+        '<div class="angka-besar nom">' + rp(p.total) + '</div>' +
+        (p.total > 0 ? '<div class="komposisi" role="img" aria-label="Komposisi asset">' + bagian.filter((b) => b[1] > 0).map((b) => '<i style="flex:' + Math.max(b[1], p.total * 0.012) + ';background:var(' + b[2] + ')"></i>').join('') + '</div>' : '') +
+        '<ul class="legenda" style="margin-top:12px">' + bagian.map((b) => '<li><span class="nm"><i style="background:var(' + b[2] + ')"></i>' + b[0] + '</span><span class="vl nom">' + rp(b[1]) + '<small>' + persen(b[1]) + '%</small></span></li>').join('') + '</ul>' +
+      '</section>' +
+      '<section class="grid-b">' +
+        // ---- emas
+        '<div class="kartu"><div class="kartu-kepala"><h2>🪙 Emas</h2><button class="tautan" data-harga="EMAS">Atur harga</button></div>' +
+          '<div class="angka-besar num">' + (S.sembunyi ? '•••' : H.gramTeks(e.gram)) + ' <small>gram</small></div>' +
+          info('Harga per gram', (e.harga > 0 ? H.rupiah(e.harga) : '—')) +
+          '<p class="bantuan" style="text-align:right;margin:-4px 0 4px">' + esc(sumberHarga(e.info)) + '</p>' +
+          info('Nilai sekarang', e.harga > 0 ? rp(e.nilai) : '—') +
+          (e.gram > 0 && e.harga > 0 && e.modalLengkap && e.modal > 0 ? info('Modal', rp(e.modal)) + '<div style="text-align:right;margin-top:4px">' + untungRugi(e.nilai, e.modal) + '</div>'
+            : e.gram > 0 && !e.modalLengkap ? '<p class="bantuan" style="margin-top:6px">Untung/rugi belum bisa dihitung karena harga beli saldo awal emas belum diisi (sheet Aset_Emas, kolom harga_beli_per_gram).</p>' : '') +
+          (e.harga > 0 ? '' : '<p class="bantuan" style="margin-top:6px">Harga emas belum tersedia. Tekan "Perbarui harga" atau "Atur harga" untuk mengisinya sendiri.</p>') +
+          '<button class="tombol polos penuh" data-aksi="beli-emas" style="margin-top:14px">' + ikon('tambah') + 'Beli emas</button></div>' +
+        // ---- saham
+        '<div class="kartu"><div class="kartu-kepala"><h2>📈 Saham</h2><span class="nom" style="font-weight:700;font-size:14px">' + rp(p.nilaiSaham) + '</span></div>' +
+          (p.saham.length ? '<ul class="daftar">' + p.saham.map((q) =>
+            '<li><button class="baris" data-harga="' + esc(q.kode) + '" aria-label="Atur harga ' + esc(q.kode) + '"><span class="emo" style="font-size:12px;font-weight:800;letter-spacing:.02em">' + esc(q.kode) + '</span>' +
+            '<div><div class="baris-judul">' + H.ribuan(q.lot) + ' lot</div><div class="baris-sub">' + (q.harga > 0 ? 'harga ' + H.rupiah(q.harga) : 'harga belum ada') + '</div></div>' +
+            '<div class="baris-nilai nom">' + (q.harga > 0 ? rp(q.nilai) : '—') + '</div></button>' +
+            '<div class="saham-bawah"><span>rata-rata beli ' + (S.sembunyi ? '•••' : H.rupiah(Math.round(q.rata))) + ' · ' + esc(sumberHarga(q.info)) + '</span>' + (q.harga > 0 && q.modal > 0 ? untungRugi(q.nilai, q.modal) : '') + '</div></li>').join('') + '</ul>'
+            : kosong('📈', 'Belum ada saham', 'Tekan "Beli saham", tulis kodenya (mis. BBCA) dan jumlah lot. Harganya diambil otomatis.')) +
+          '<button class="tombol polos penuh" data-aksi="beli-saham" style="margin-top:14px">' + ikon('tambah') + 'Beli saham</button></div>' +
+        // ---- tabungan
+        '<div class="kartu"><div class="kartu-kepala"><h2>🐷 Tabungan & tunai</h2><span class="nom" style="font-weight:700;font-size:14px">' + rp(p.nilaiTunai) + '</span></div><ul class="daftar">' +
+          p.tunai.map((a) => '<li class="baris"><span class="emo">' + esc(a.ikon || '💳') + '</span><div><div class="baris-judul">' + esc(a.nama) + '</div><div class="baris-sub">' + esc(a.tipe || '') + '</div></div><div class="baris-nilai nom">' + rp(a.saldo) + '</div></li>').join('') +
+          '</ul><button class="tombol polos penuh" data-aksi="setor-tabungan" style="margin-top:14px">' + ikon('tambah') + 'Setor tabungan</button></div>' +
+      '</section>' +
+      '<p class="bantuan" style="margin:14px 4px">Harga saham berasal dari Google Finance dan bisa tertunda hingga sekitar 20 menit. Harga emas adalah harga spot dunia dikali kurs USD/IDR, jadi bisa berbeda dari harga jual-beli di platform emasmu; pakai "Atur harga" bila ingin memakai harga platform.</p>';
+  }
+
+  async function perbaruiHarga(diam) {
+    if (S.hargaJalan || !S.data) return;
+    S.hargaJalan = true; S.hargaCoba = Date.now();
+    if (S.halaman === 'asset') gambar();
+    try {
+      const r = await panggil('harga.segarkan', {});
+      S.data.harga = r.harga; simpanCache();
+      if (!diam) toast(r.pesan || 'Harga diperbarui', r.pesan ? 'galat' : '');
+    } catch (e) {
+      if (!diam) toast(e.kode === 'AKSI' ? 'Server belum versi 1.1. Perbarui Code.gs dulu.' : 'Gagal memperbarui harga: ' + e.message, 'galat');
+    }
+    S.hargaJalan = false;
+    if (S.halaman === 'asset' && !form) gambar();
+  }
+
+  /** Harga emas diambil ulang di latar bila umurnya lebih dari 30 menit (paling sering tiap 10 menit). */
+  function segarkanHargaBilaBasi() {
+    if (!S.data || !Array.isArray(S.data.harga) || S.cfg.demo) return;
+    if (Date.now() - (S.hargaCoba || 0) < 600000) return;
+    const e = S.data.harga.find((x) => x.kode === 'EMAS');
+    const umur = e && e.diperbarui ? Date.now() - new Date(e.diperbarui).getTime() : Infinity;
+    if (!(umur < 1800000)) perbaruiHarga(true);
+  }
+
+  async function aturHargaManual(kode) {
+    const h = ((S.data.harga || []).find((x) => x.kode === kode)) || {};
+    const satuan = kode === 'EMAS' ? 'per gram' : 'per lembar';
+    const hasil = await dialogAngka('Harga ' + (kode === 'EMAS' ? 'emas' : kode) + ' ' + satuan,
+      'Harga otomatis: ' + (h.otomatis > 0 ? H.rupiah(h.otomatis) : 'belum tersedia') + '. Isi harga sendiri bila ingin memakai harga platformmu, atau pilih "Pakai otomatis".', h.manual || 0);
+    if (hasil === null) return;
+    try {
+      const r = await panggil('harga.manual', { kode, harga: hasil });
+      S.data.harga = r.harga; simpanCache(); gambar();
+      toast(hasil > 0 ? 'Harga manual disimpan' : 'Kembali memakai harga otomatis');
+    } catch (e) { toast(e.kode === 'AKSI' ? 'Server belum versi 1.1. Perbarui Code.gs dulu.' : 'Gagal menyimpan harga: ' + e.message, 'galat'); }
+  }
+
+  /** Dialog kecil berisi satu isian angka. Hasil: angka (0 = pakai otomatis) atau null bila dibatalkan. */
+  function dialogAngka(judul, teks, awal) {
+    return new Promise((selesai) => {
+      const el = document.createElement('div');
+      el.className = 'tirai'; el.style.zIndex = 60; el.style.alignItems = 'center';
+      el.innerHTML = '<form class="lembar dialog" role="alertdialog" aria-modal="true" aria-label="' + esc(judul) + '" novalidate><h2>' + esc(judul) + '</h2><p>' + esc(teks) + '</p>' +
+        '<div class="kolom"><label for="d-angka">Harga manual (Rp)</label><input class="isian num" id="d-angka" inputmode="numeric" autocomplete="off" data-ribuan placeholder="0" value="' + H.ribuan(awal) + '"></div>' +
+        '<div class="baris-tombol"><button type="button" class="tombol polos" data-j="batal">Batal</button><button type="button" class="tombol polos" data-j="oto">Pakai otomatis</button><button type="submit" class="tombol utama">Simpan</button></div></form>';
+      const tutup = (v) => { el.remove(); selesai(v); };
+      el.addEventListener('click', (ev) => {
+        const b = ev.target.closest('[data-j]');
+        if (ev.target === el || (b && b.dataset.j === 'batal')) tutup(null);
+        else if (b && b.dataset.j === 'oto') tutup(0);
+      });
+      el.addEventListener('submit', (ev) => { ev.preventDefault(); tutup(H.angkaDariTeks($('#d-angka', el).value)); });
+      el.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') tutup(null); });
+      document.body.appendChild(el);
+      $('#d-angka', el).focus();
+    });
+  }
+
+  /* ==========================================================
      9. FORM TRANSAKSI (tambah / ubah)
      ========================================================== */
   let form = null;
+
+  const tipeAset = (t) => (!asetkah(t) ? '' : t.kategori_id === KAT_EMAS ? 'emas' : t.kategori_id === KAT_SAHAM ? 'saham' : '');
+  const hargaKode = (kode) => { const h = ((S.data && S.data.harga) || []).find((x) => x.kode === kode); return h && h.harga > 0 ? h : null; };
 
   function bukaForm(t, mode) {
     if (!S.data) return;
     const akhir = baca(LS.akunAkhir, {});
     form = {
       mode: mode || (t ? 'ubah' : 'tambah'),
-      t: Object.assign({ id: idBaru(), jenis: 'Pengeluaran', nominal: 0, kategori_id: '', akun_id: '', akun_tujuan_id: '', goal_id: '', tanggal: hariIni(), catatan: '' }, t || {})
+      t: Object.assign({ id: idBaru(), jenis: 'Pengeluaran', nominal: 0, kategori_id: '', akun_id: '', akun_tujuan_id: '', goal_id: '', tanggal: hariIni(), catatan: '', aset_kode: '', aset_jumlah: 0 }, t || {}),
+      hargaSatuan: 0,       // harga per gram (emas) atau per lembar (saham)
+      hargaDiketik: false,  // harga satuan diketik sendiri
+      totalManual: false,   // total rupiah diketik sendiri (mis. termasuk biaya)
+      infoHarga: ''
     };
+    const ft = form.t;
+    if (ft.jenis === 'Transfer') ft.jenis = 'Asset';
+    const tipe = tipeAset(ft);
+    if (tipe && ft.aset_jumlah > 0 && ft.nominal > 0) {
+      // membuka transaksi lama: pertahankan total yang tercatat
+      form.hargaSatuan = Math.round(ft.nominal / (ft.aset_jumlah * (tipe === 'saham' ? 100 : 1)));
+      form.totalManual = true; form.hargaDiketik = true;
+    } else if (tipe) isiHargaSatuan();
     const akunSah = (id) => S.data.akun.some((a) => a.id === id && a.aktif !== false);
-    if (!akunSah(form.t.akun_id)) form.t.akun_id = akunSah(akhir[form.t.jenis]) ? akhir[form.t.jenis] : ((S.data.akun.find((a) => a.aktif !== false) || {}).id || '');
+    if (!akunSah(ft.akun_id)) ft.akun_id = akunSah(akhir[ft.jenis]) ? akhir[ft.jenis] : ((S.data.akun.find((a) => a.aktif !== false) || {}).id || '');
     gambarForm(true);
+  }
+
+  /** Mengisi harga satuan dari harga terkini (emas, atau saham yang kodenya sudah dikenal). */
+  function isiHargaSatuan() {
+    const tipe = tipeAset(form.t);
+    const h = tipe === 'emas' ? hargaKode('EMAS') : tipe === 'saham' && form.t.aset_kode ? hargaKode(form.t.aset_kode) : null;
+    form.infoHarga = '';
+    if (h) {
+      if (!form.hargaDiketik) form.hargaSatuan = Math.round(h.harga);
+      form.infoHarga = 'Harga terkini ' + (tipe === 'saham' ? form.t.aset_kode + ' ' : '') + H.rupiah(h.harga) + (tipe === 'emas' ? ' per gram' : ' per lembar') + (h.sumber ? ' (' + h.sumber + ')' : '') + '.';
+    } else if (tipe === 'emas') form.infoHarga = 'Harga emas otomatis belum tersedia. Isi harga per gram sendiri.';
+    hitungTotal();
+  }
+
+  function hitungTotal() {
+    const tipe = tipeAset(form.t);
+    if (!tipe || form.totalManual) return;
+    form.t.nominal = Math.round((Number(form.t.aset_jumlah) || 0) * (tipe === 'saham' ? 100 : 1) * (form.hargaSatuan || 0));
+  }
+
+  async function cekHargaSaham(kode) {
+    let h = hargaKode(kode);
+    if (!h) {
+      if ($('#f-info')) $('#f-info').textContent = 'Mencari harga ' + kode + '…';
+      try {
+        const r = await panggil('harga.cek', { kode });
+        if (r.ditemukan) {
+          h = { kode, jenis: 'saham', harga: r.harga, otomatis: r.harga, manual: 0, sumber: r.sumber || 'Google Finance', diperbarui: '' };
+          S.data.harga = (S.data.harga || []).filter((x) => x.kode !== kode).concat([h]);
+          simpanCache();
+        }
+      } catch (e) { /* harga diisi sendiri */ }
+    }
+    if (!form || form.t.aset_kode !== kode || tipeAset(form.t) !== 'saham') return;   // sudah berganti kode / form ditutup
+    if (h) isiHargaSatuan();
+    else form.infoHarga = 'Harga ' + kode + ' tidak ditemukan otomatis. Isi harga per lembar sendiri.';
+    // Perbarui isian tanpa menggambar ulang form supaya fokus tidak hilang.
+    if (h && $('#f-harga') && !form.hargaDiketik) $('#f-harga').value = H.ribuan(form.hargaSatuan);
+    if ($('#f-nominal') && !form.totalManual) $('#f-nominal').value = H.ribuan(form.t.nominal);
+    if ($('#f-info')) $('#f-info').textContent = form.infoHarga + ' 1 lot = 100 lembar.';
   }
 
   function kategoriUntuk(jenis) {
     const pakai = {};
     for (const t of S.data.transaksi) pakai[t.kategori_id] = (pakai[t.kategori_id] || 0) + 1;
-    return S.data.kategori.filter((k) => k.jenis === jenis && k.aktif !== false)
+    return S.data.kategori.filter((k) => (k.jenis === jenis || (jenis === 'Asset' && k.jenis === 'Transfer')) && k.aktif !== false)
       .sort((a, b) => ((pakai[b.id] || 0) - (pakai[a.id] || 0)) || ((a.urutan || 0) - (b.urutan || 0)));
   }
 
-  function gambarForm(fokusNominal) {
-    const t = form.t, ubah = form.mode === 'ubah';
+  function gambarForm(fokusUtama) {
+    const t = form.t, ubah = form.mode === 'ubah', tipe = tipeAset(t), aset = asetkah(t);
     const akun = S.data.akun.filter((a) => a.aktif !== false).sort((a, b) => (a.urutan || 0) - (b.urutan || 0));
     const chipAkun = (a, aktif, atribut) => '<button type="button" class="chip' + (aktif ? ' aktif' : '') + '" ' + atribut + '="' + esc(a.id) + '">' + esc((a.ikon ? a.ikon + ' ' : '') + a.nama) + '</button>';
     const kemarin = geserHari(hariIni(), -1);
 
+    // Isian utama: rupiah untuk transaksi biasa, gram untuk emas, lot untuk saham.
+    const utama = tipe === 'emas'
+      ? '<label class="nominal"><input id="f-jumlah" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="Jumlah emas dalam gram" value="' + (t.aset_jumlah > 0 ? H.gramTeks(t.aset_jumlah) : '') + '"><span>gram</span></label>'
+      : tipe === 'saham'
+        ? '<label class="nominal"><input id="f-jumlah" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Jumlah lot" value="' + (t.aset_jumlah > 0 ? H.ribuan(t.aset_jumlah) : '') + '"><span>lot</span></label>'
+        : '<label class="nominal"><span>Rp</span><input id="f-nominal" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Nominal" value="' + H.ribuan(t.nominal) + '"></label>';
+
+    const rinciAset = !tipe ? '' :
+      (tipe === 'saham' ? '<div class="kolom"><label for="f-kode">Kode saham</label><input class="isian" id="f-kode" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="mis. BBCA" value="' + esc(t.aset_kode || '') + '"></div>' : '') +
+      '<div class="dua"><div class="kolom"><label for="f-harga">' + (tipe === 'emas' ? 'Harga per gram (Rp)' : 'Harga per lembar (Rp)') + '</label><input class="isian num" id="f-harga" inputmode="numeric" autocomplete="off" data-ribuan placeholder="0" value="' + H.ribuan(form.hargaSatuan) + '"></div>' +
+      '<div class="kolom"><label for="f-nominal">Total bayar (Rp)</label><input class="isian num" id="f-nominal" inputmode="numeric" autocomplete="off" data-ribuan placeholder="0" value="' + H.ribuan(t.nominal) + '"></div></div>' +
+      '<p class="bantuan" id="f-info" style="margin:-6px 0 14px">' + esc(form.infoHarga + (tipe === 'saham' ? ' 1 lot = 100 lembar.' : '')) + '</p>';
+
     $('#lapisan').innerHTML =
       '<div class="tirai" data-tirai><form class="lembar" id="form-tx" novalidate role="dialog" aria-modal="true" aria-label="' + (ubah ? 'Ubah transaksi' : 'Transaksi baru') + '">' +
         '<div class="lembar-kepala"><h2>' + (ubah ? 'Ubah transaksi' : 'Transaksi baru') + '</h2><button type="button" class="tutup" data-tutup aria-label="Tutup">' + ikon('tutup') + '</button></div>' +
-        '<div class="segmen" role="group" aria-label="Jenis transaksi">' + ['Pengeluaran', 'Pemasukan', 'Transfer'].map((j) => '<button type="button" data-jenis="' + j + '" class="' + (t.jenis === j ? 'aktif' : '') + '" aria-pressed="' + (t.jenis === j) + '">' + j + '</button>').join('') + '</div>' +
-        '<label class="nominal"><span>Rp</span><input id="f-nominal" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Nominal" value="' + H.ribuan(t.nominal) + '"></label>' +
+        '<div class="segmen" role="group" aria-label="Jenis transaksi">' + ['Pengeluaran', 'Pemasukan', 'Asset'].map((j) => '<button type="button" data-jenis="' + j + '" class="' + (t.jenis === j ? 'aktif' : '') + '" aria-pressed="' + (t.jenis === j) + '">' + j + '</button>').join('') + '</div>' +
+        utama +
         '<div class="galat-teks" id="f-galat" role="alert"></div>' +
-        '<div class="label" style="margin:6px 0 8px">' + (t.jenis === 'Transfer' ? 'Untuk apa? (tabungan & investasi)' : 'Kategori') + '</div>' +
+        '<div class="label" style="margin:6px 0 8px">' + (aset ? 'Jenis asset' : 'Kategori') + '</div>' +
         '<div class="kat-grid">' + kategoriUntuk(t.jenis).map((k) => '<button type="button" class="kat' + (t.kategori_id === k.id ? ' aktif' : '') + '" data-kat="' + esc(k.id) + '" aria-pressed="' + (t.kategori_id === k.id) + '"><span>' + esc(k.ikon || '•') + '</span><span>' + esc(k.nama) + '</span></button>').join('') + '</div>' +
-        '<div class="label" style="margin-bottom:8px">' + (t.jenis === 'Pemasukan' ? 'Masuk ke akun' : 'Dari akun') + '</div>' +
+        rinciAset +
+        '<div class="label" style="margin-bottom:8px">' + (t.jenis === 'Pemasukan' ? 'Masuk ke akun' : tipe ? 'Dibayar dari akun' : 'Dari akun') + '</div>' +
         '<div class="chip-baris">' + akun.map((a) => chipAkun(a, t.akun_id === a.id, 'data-akun')).join('') + '</div>' +
-        (t.jenis === 'Transfer' ? '<div class="label" style="margin:4px 0 8px">Tujuan</div><div class="chip-baris">' +
-          '<button type="button" class="chip' + (!t.akun_tujuan_id ? ' aktif' : '') + '" data-tujuan="">📈 Investasi / luar akun</button>' +
+        (aset && !tipe ? '<div class="label" style="margin:4px 0 8px">Tujuan</div><div class="chip-baris">' +
+          '<button type="button" class="chip' + (!t.akun_tujuan_id ? ' aktif' : '') + '" data-tujuan="">Luar akun</button>' +
           akun.filter((a) => a.id !== t.akun_id).map((a) => chipAkun(a, t.akun_tujuan_id === a.id, 'data-tujuan')).join('') + '</div>' : '') +
         '<div class="dua" style="margin-top:4px"><div class="kolom"><label for="f-tanggal">Tanggal</label><input class="isian" id="f-tanggal" type="date" value="' + esc(t.tanggal) + '" max="2100-12-31"></div>' +
         '<div class="kolom"><span class="label">Cepat</span><div class="chip-baris" style="padding:6px 0 0"><button type="button" class="chip' + (t.tanggal === hariIni() ? ' aktif' : '') + '" data-tgl="' + hariIni() + '">Hari ini</button><button type="button" class="chip' + (t.tanggal === kemarin ? ' aktif' : '') + '" data-tgl="' + kemarin + '">Kemarin</button></div></div></div>' +
-        '<div class="kolom"><label for="f-catatan">Catatan (opsional)</label><input class="isian" id="f-catatan" maxlength="200" autocomplete="off" placeholder="mis. makan siang" value="' + esc(t.catatan) + '"></div>' +
+        '<div class="kolom"><label for="f-catatan">Catatan (opsional)</label><input class="isian" id="f-catatan" maxlength="200" autocomplete="off" placeholder="' + (tipe ? 'mis. nama platform' : 'mis. makan siang') + '" value="' + esc(t.catatan) + '"></div>' +
         '<div class="baris-tombol aksi-form">' + (ubah ? '<button type="button" class="tombol bahaya" data-hapus aria-label="Hapus transaksi">' + ikon('sampah') + '</button>' : '') +
         '<button type="submit" class="tombol utama" style="flex:1">' + (ubah ? 'Simpan perubahan' : 'Simpan') + '</button></div>' +
       '</form></div>';
     document.body.style.overflow = 'hidden';
-    if (fokusNominal) { const n = $('#f-nominal'); n.focus(); const p = n.value.length; try { n.setSelectionRange(p, p); } catch (e) { /* abaikan */ } }
+    if (fokusUtama) { const n = $('#f-jumlah') || $('#f-nominal'); n.focus(); const p = n.value.length; try { n.setSelectionRange(p, p); } catch (e) { /* abaikan */ } }
   }
 
   function bacaIsianForm() {
-    if (!form || !$('#f-nominal')) return;
-    form.t.nominal = H.angkaDariTeks($('#f-nominal').value);
-    form.t.tanggal = $('#f-tanggal').value || form.t.tanggal;
-    form.t.catatan = $('#f-catatan').value.trim();
+    if (!form || !$('#f-tanggal')) return;
+    const t = form.t, tipe = tipeAset(t);
+    if ($('#f-nominal')) t.nominal = H.angkaDariTeks($('#f-nominal').value);
+    if (tipe && $('#f-jumlah')) t.aset_jumlah = tipe === 'emas' ? H.gramDariTeks($('#f-jumlah').value) : H.angkaDariTeks($('#f-jumlah').value);
+    if ($('#f-harga')) form.hargaSatuan = H.angkaDariTeks($('#f-harga').value);
+    if ($('#f-kode')) t.aset_kode = $('#f-kode').value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
+    t.tanggal = $('#f-tanggal').value || t.tanggal;
+    t.catatan = $('#f-catatan').value.trim();
+  }
+
+  /** Dipanggil saat kategori/jenis berganti: isian utama berubah arti (rupiah, gram, lot), jadi dikosongkan. */
+  function gantiTipeAset(dulu) {
+    const t = form.t, kini = tipeAset(t);
+    if (dulu === kini) return false;
+    t.nominal = 0; t.aset_jumlah = 0; t.aset_kode = kini === 'emas' ? 'EMAS' : '';
+    form.hargaSatuan = 0; form.hargaDiketik = false; form.totalManual = false; form.infoHarga = '';
+    if (kini) { t.akun_tujuan_id = ''; isiHargaSatuan(); }
+    return true;
   }
 
   function tutupLapisan() {
@@ -747,21 +1017,28 @@
 
   function kirimForm() {
     bacaIsianForm();
-    const t = form.t, galat = $('#f-galat');
-    let pesan = '';
-    if (!(t.nominal > 0)) pesan = 'Nominal wajib diisi dan harus lebih dari 0.';
-    else if (!t.kategori_id) pesan = 'Pilih kategori dulu.';
+    const t = form.t, galat = $('#f-galat'), tipe = tipeAset(t);
+    let pesan = '', fokus = '';
+    if (tipe && !t.kategori_id) pesan = 'Pilih jenis asset dulu.';
+    else if (tipe === 'emas' && !(t.aset_jumlah > 0)) { pesan = 'Isi jumlah emas dalam gram dulu.'; fokus = '#f-jumlah'; }
+    else if (tipe === 'saham' && !(t.aset_jumlah >= 1)) { pesan = 'Isi jumlah lot dulu (minimal 1).'; fokus = '#f-jumlah'; }
+    else if (tipe === 'saham' && !/^[A-Z]{4}$/.test(t.aset_kode || '')) { pesan = 'Kode saham harus 4 huruf, misalnya BBCA.'; fokus = '#f-kode'; }
+    else if (!(t.nominal > 0)) { pesan = tipe ? 'Total bayar belum terisi. Isi harga atau totalnya.' : 'Nominal wajib diisi dan harus lebih dari 0.'; fokus = tipe ? '#f-harga' : '#f-nominal'; }
+    else if (!t.kategori_id) pesan = asetkah(t) ? 'Pilih jenis asset dulu.' : 'Pilih kategori dulu.';
     else if (!t.akun_id) pesan = 'Pilih akun dulu.';
     else if (!/^\d{4}-\d{2}-\d{2}$/.test(t.tanggal)) pesan = 'Tanggal belum diisi.';
     if (pesan) {
       galat.textContent = pesan;
       const l = $('#form-tx'); l.classList.remove('goyang'); void l.offsetWidth; l.classList.add('goyang');
-      if (!(t.nominal > 0)) $('#f-nominal').focus();
+      if (fokus && $(fokus)) $(fokus).focus();
       return;
     }
-    if (t.jenis !== 'Transfer') t.akun_tujuan_id = '';
+    if (!asetkah(t) || tipe) t.akun_tujuan_id = '';
     const akhir = baca(LS.akunAkhir, {}); akhir[t.jenis] = t.akun_id; tulis(LS.akunAkhir, akhir);
-    const kirim = { id: t.id, jenis: t.jenis, nominal: t.nominal, kategori_id: t.kategori_id, akun_id: t.akun_id, akun_tujuan_id: t.akun_tujuan_id, goal_id: t.goal_id || '', tanggal: t.tanggal, catatan: t.catatan };
+    const kirim = {
+      id: t.id, jenis: t.jenis, nominal: t.nominal, kategori_id: t.kategori_id, akun_id: t.akun_id, akun_tujuan_id: t.akun_tujuan_id, goal_id: t.goal_id || '', tanggal: t.tanggal, catatan: t.catatan,
+      aset_kode: tipe === 'emas' ? 'EMAS' : tipe === 'saham' ? t.aset_kode : '', aset_jumlah: tipe ? t.aset_jumlah : 0
+    };
     const mode = form.mode;
     tutupLapisan();
     simpanTransaksi(kirim, mode);
@@ -853,7 +1130,7 @@
      11. PERISTIWA
      ========================================================== */
   document.addEventListener('click', async (e) => {
-    const el = e.target.closest('[data-hal],[data-aksi],[data-tx],[data-saring],[data-jenis],[data-kat],[data-akun],[data-tujuan],[data-tgl],[data-tutup],[data-hapus],[data-tirai]');
+    const el = e.target.closest('[data-hal],[data-aksi],[data-tx],[data-saring],[data-jenis],[data-kat],[data-akun],[data-tujuan],[data-tgl],[data-tutup],[data-hapus],[data-harga],[data-tirai]');
     if (!el) return;
     const ds = el.dataset;
 
@@ -865,8 +1142,8 @@
 
     // --- di dalam form transaksi
     if (form && el.closest('#form-tx')) {
-      if (ds.jenis) { bacaIsianForm(); if (form.t.jenis !== ds.jenis) { form.t.jenis = ds.jenis; form.t.kategori_id = ''; form.t.akun_tujuan_id = ''; } return gambarForm(false); }
-      if (ds.kat) { bacaIsianForm(); form.t.kategori_id = ds.kat; return gambarForm(false); }
+      if (ds.jenis) { bacaIsianForm(); const dulu = tipeAset(form.t); if (form.t.jenis !== ds.jenis) { form.t.jenis = ds.jenis; form.t.kategori_id = ''; form.t.akun_tujuan_id = ''; } return gambarForm(gantiTipeAset(dulu)); }
+      if (ds.kat) { bacaIsianForm(); const dulu = tipeAset(form.t); form.t.kategori_id = ds.kat; return gambarForm(gantiTipeAset(dulu)); }
       if (ds.akun) { bacaIsianForm(); form.t.akun_id = ds.akun; if (form.t.akun_tujuan_id === ds.akun) form.t.akun_tujuan_id = ''; return gambarForm(false); }
       if ('tujuan' in ds) { bacaIsianForm(); form.t.akun_tujuan_id = ds.tujuan; return gambarForm(false); }
       if (ds.tgl) { bacaIsianForm(); form.t.tanggal = ds.tgl; return gambarForm(false); }
@@ -879,8 +1156,14 @@
       }
     }
 
+    if (ds.harga) return aturHargaManual(ds.harga);
+
     switch (ds.aksi) {
       case 'tambah': return bukaForm(null, 'tambah');
+      case 'beli-emas': return bukaForm({ jenis: 'Asset', kategori_id: KAT_EMAS, aset_kode: 'EMAS' }, 'tambah');
+      case 'beli-saham': return bukaForm({ jenis: 'Asset', kategori_id: KAT_SAHAM }, 'tambah');
+      case 'setor-tabungan': return bukaForm({ jenis: 'Asset', kategori_id: 'tabungan' }, 'tambah');
+      case 'perbarui-harga': return perbaruiHarga(false);
       case 'mata': S.sembunyi = !S.sembunyi; tulis(LS.sembunyi, S.sembunyi); return gambar();
       case 'segarkan': return sinkronkan();
       case 'segarkan-kabari': return sinkronkan({ kabari: true });
@@ -922,7 +1205,37 @@
     if (el.id === 'f-nominal' || el.hasAttribute('data-ribuan')) {
       const n = H.angkaDariTeks(el.value.slice(0, 18));
       el.value = H.ribuan(Math.min(n, 999999999999));
-      if (el.id === 'f-nominal' && $('#f-galat')) $('#f-galat').textContent = '';
+      if (form && (el.id === 'f-nominal' || el.id === 'f-harga')) {
+        $('#f-galat').textContent = '';
+        if (tipeAset(form.t) && el.id === 'f-nominal') form.totalManual = n > 0;       // total diketik sendiri
+        if (el.id === 'f-harga') {
+          form.hargaSatuan = n; form.hargaDiketik = n > 0; form.totalManual = false;
+          form.t.aset_jumlah = tipeAset(form.t) === 'emas' ? H.gramDariTeks($('#f-jumlah').value) : H.angkaDariTeks($('#f-jumlah').value);
+          hitungTotal(); $('#f-nominal').value = H.ribuan(form.t.nominal);
+        }
+      }
+    } else if (form && el.id === 'f-jumlah') {
+      const tipe = tipeAset(form.t);
+      if (tipe === 'emas') {
+        // angka dengan satu koma desimal, maksimal 4 angka di belakang koma
+        let v = el.value.replace(/\./g, ',').replace(/[^\d,]/g, '');
+        const i = v.indexOf(',');
+        if (i >= 0) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/,/g, '').slice(0, 4);
+        el.value = v.slice(0, 12);
+        form.t.aset_jumlah = H.gramDariTeks(el.value);
+      } else {
+        form.t.aset_jumlah = Math.min(H.angkaDariTeks(el.value.slice(0, 9)), 9999999);
+        el.value = H.ribuan(form.t.aset_jumlah);
+      }
+      $('#f-galat').textContent = '';
+      form.totalManual = false;
+      hitungTotal(); if ($('#f-nominal')) $('#f-nominal').value = H.ribuan(form.t.nominal);
+    } else if (form && el.id === 'f-kode') {
+      el.value = el.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
+      form.t.aset_kode = el.value; form.hargaDiketik = false;
+      $('#f-galat').textContent = '';
+      if (el.value.length === 4) cekHargaSaham(el.value);
+      else if ($('#f-info')) $('#f-info').textContent = '1 lot = 100 lembar.';
     } else if (el.id === 'cari-riwayat') {
       S.saring.teks = el.value; S.saring.batas = 80; gambar();
     }
